@@ -113,10 +113,7 @@ async def find_component(name: str) -> str:
     Example: find_component('UserPage')
     """
     rows = await q(
-        """SELECT name, file,
-           array::group(->uses->hook.name) AS hooks,
-           array::group(->calls->api_fn.name) AS api_calls
-           FROM component WHERE name = $name GROUP BY name, file""",
+        "SELECT name, file, hooks, api_calls FROM component WHERE name = $name",
         {"name": name}
     )
     if not rows:
@@ -414,7 +411,7 @@ async def remember(key: str, value: str, agent: str = "claude") -> str:
     Example: remember('db_host', 'postgres:5432', 'claude')
     """
     await q(
-        """INSERT INTO memory (key, value, agent, updated_at)
+        """INSERT INTO kv_store (key, value, agent, updated_at)
            VALUES ($key, $value, $agent, $t)
            ON DUPLICATE KEY UPDATE value = $value, agent = $agent, updated_at = $t""",
         {"key": key, "value": value, "agent": agent, "t": now_iso()}
@@ -429,12 +426,12 @@ async def recall(key: str) -> str:
     Example: recall('db_host')
     """
     rows = await q(
-        "SELECT value, agent, updated_at FROM memory WHERE key = $key",
+        "SELECT value, agent, updated_at FROM kv_store WHERE key = $key",
         {"key": key}
     )
     if not rows:
         rows = await q(
-            "SELECT key, value FROM memory WHERE key CONTAINS $key LIMIT 5",
+            "SELECT key, value FROM kv_store WHERE key CONTAINS $key LIMIT 5",
             {"key": key}
         )
         if rows:
