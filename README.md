@@ -98,6 +98,24 @@ See **[GEMINI.md](GEMINI.md)** for full Gemini setup and coordination protocol.
 
 ---
 
+## Slash Commands (Claude Code Skills)
+
+Ready-made slash commands in `commands/`. Copy to `~/.claude/commands/` for global use
+or to `.claude/commands/` in your project root.
+
+| Command | What it does |
+|---------|-------------|
+| `/brain-init [task]` | Start of conversation — load session, notes, active tasks, modules |
+| `/brain-task TICKET` | Load ticket context, find handlers/components, claim task |
+| `/brain-checkpoint [progress]` | Save progress, update spec status, log decisions |
+| `/brain-done TICKET` | Close ticket, release claim, hand off to other agent |
+| `/brain-reindex [sync]` | Re-index codebase into graph after a merge |
+
+**Token savings:** querying the graph instead of reading files saves ~85x tokens on navigation
+and context loading (~35k tokens per session on a medium-sized project).
+
+---
+
 ## Recommended Session Flow
 
 ```
