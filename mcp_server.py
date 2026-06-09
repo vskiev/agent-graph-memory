@@ -440,7 +440,8 @@ async def recall(key: str) -> str:
         return f"Nothing stored for '{key}'"
 
     r = rows[0]
-    return f"{key} = {r['val']}\n(stored by {r['agent']} at {r['updated_at'][:16]})"
+    ts = (r.get("updated_at") or "")[:16]
+    return f"{key} = {r['val']}\n(stored by {r.get('agent', '?')}{f' at {ts}' if ts else ''})"
 
 
 @mcp.tool()
