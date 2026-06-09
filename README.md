@@ -161,6 +161,11 @@ echo "Graph memory: reindexing in background..."
 
 | Component | Version | Role |
 |-----------|---------|------|
-| SurrealDB | 2.6.5 | Graph database (RocksDB backend) |
+| SurrealDB | **2.6.5** (pinned) | Graph database (RocksDB backend) |
+| surrealdb Python SDK | 2.0.0 | DB client inside MCP server |
 | Python MCP server | FastMCP | Exposes tools over SSE |
 | Docker Compose | — | Single-command setup |
+
+> **SurrealDB version note:** The Python SDK 2.0.0 officially claims compatibility with SurrealDB v2.0.0–v3.1.3.
+> In practice, query parameters are silently dropped on v3.x (inserts produce empty rows).
+> Pin to **v2.6.5** — it is fully compatible and stable.

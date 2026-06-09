@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   surrealdb:
-    image: surrealdb/surrealdb:v2
+    image: surrealdb/surrealdb:v2.6.5
     container_name: agent-graph-db
     user: root
     ports:
