@@ -417,7 +417,7 @@ async def write_all(specs, endpoints, components, hooks, context,
     from surrealdb import AsyncSurreal
 
     async with AsyncSurreal(DB_URL) as db:
-        await db.signin({"user": DB_USER, "pass": DB_PASS})
+        await db.signin({"username": DB_USER, "password": DB_PASS})
         await db.use(DB_NS, DB_DB)
 
         print(f"📦 Writing {len(context)} context records...")

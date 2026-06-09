@@ -54,7 +54,7 @@ async def main():
     print(f"   Found {len(file_statuses)} PROJ files\n")
 
     async with AsyncSurreal(DB_URL) as db:
-        await db.signin({"user": DB_USER, "pass": DB_PASS})
+        await db.signin({"username": DB_USER, "password": DB_PASS})
         await db.use(DB_NS, DB_DB)
 
         rows = await db.query("SELECT ticket, status FROM spec ORDER BY ticket")
@@ -108,7 +108,7 @@ async def main():
     print(f"\n🔄 Updating graph...")
 
     async with AsyncSurreal(DB_URL) as db:
-        await db.signin({"user": DB_USER, "pass": DB_PASS})
+        await db.signin({"username": DB_USER, "password": DB_PASS})
         await db.use(DB_NS, DB_DB)
 
         updated = 0

@@ -36,7 +36,7 @@ async def db():
         from surrealdb import AsyncSurreal
         _db = AsyncSurreal(SURREALDB_URL)
         await _db.connect()
-        await _db.signin({"user": SURREALDB_USER, "pass": SURREALDB_PASS})
+        await _db.signin({"username": SURREALDB_USER, "password": SURREALDB_PASS})
         await _db.use(SURREALDB_NS, SURREALDB_DB)
     return _db
 
