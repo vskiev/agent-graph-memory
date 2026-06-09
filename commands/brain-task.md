@@ -8,13 +8,17 @@ Ticket: `$ARGUMENTS`
 ## Steps
 
 1. Call `get_spec("$ARGUMENTS")` — load spec: status, AC, branch, key files
-2. Call `get_decisions("$ARGUMENTS")` — load any past architectural decisions for this ticket
-3. Based on the spec's key files and description, call relevant navigation tools:
-   - `list_endpoints("/api/...")` — if the spec involves API endpoints
-   - `find_handler("/api/...")` — for specific route handlers
-   - `find_component("ComponentName")` — for frontend components
-   - `what_uses("hookName")` — if a hook is involved
-4. Call `claim_task("$ARGUMENTS", "claude", "working on $ARGUMENTS")` — register that you're working on it
+
+2. **In parallel**, call all of these at once:
+   - `get_decisions("$ARGUMENTS")` — past architectural decisions for this ticket
+   - `claim_task("$ARGUMENTS", "claude", "working on $ARGUMENTS")` — register ownership
+   - `get_module_context("$ARGUMENTS")` — deep module context (endpoints + components) if module name matches
+   - Based on spec's key files, also call as many as apply:
+     - `list_endpoints("/api/...")` — if spec involves API endpoints
+     - `find_handler("/api/...")` — for a specific route handler
+     - `find_component("ComponentName")` — for frontend components
+     - `what_uses("hookName")` — if a hook/symbol is involved
+     - `get_service("api")` — for service-level context (files, ports, dependencies)
 
 Then output a compact task brief:
 - Spec status and acceptance criteria
