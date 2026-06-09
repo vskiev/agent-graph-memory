@@ -293,6 +293,56 @@ def index_hooks(repo: Path) -> list[dict]:
     return records
 
 
+def index_ts_types(repo: Path) -> list[dict]:
+    """
+    Parse frontend/src/**/*.ts → TypeScript interface/type/enum records.
+    Enables find_component() to also find TS types by name.
+
+    --- CUSTOMIZE ---
+    Change the `src` path if your frontend lives elsewhere.
+    """
+    records = []
+    src = repo / "frontend" / "src"
+    if not src.exists():
+        print("  ⚠ frontend/src not found — skipping TS type indexing")
+        return records
+
+    for ts_file in sorted(src.glob("**/*.ts")):
+        rel = str(ts_file.relative_to(repo / "frontend"))
+        try:
+            text = ts_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        for m in re.finditer(r'export\s+interface\s+(\w+)[^{]*\{([^}]*)\}', text, re.DOTALL):
+            name, body = m.group(1), m.group(2)
+            fields = []
+            for line in body.splitlines():
+                line = line.strip()
+                if ':' in line and not line.startswith('//') and not line.startswith('*'):
+                    field = line.split(':')[0].strip().rstrip('?')
+                    if field and re.match(r'^\w+$', field):
+                        fields.append(field)
+            records.append({"name": name, "kind": "interface", "file": rel, "fields": fields[:15]})
+
+        for m in re.finditer(r'export\s+type\s+(\w+)\s*=\s*([^\n;]{1,200})', text):
+            name = m.group(1)
+            definition = m.group(2).strip().rstrip(';')
+            records.append({"name": name, "kind": "type", "file": rel, "fields": [definition[:100]]})
+
+        for m in re.finditer(r'export\s+enum\s+(\w+)\s*\{([^}]*)\}', text, re.DOTALL):
+            name, body = m.group(1), m.group(2)
+            values = []
+            for line in body.splitlines():
+                line = line.strip().split('=')[0].strip().rstrip(',')
+                if line and not line.startswith('//') and re.match(r'^\w+$', line):
+                    values.append(line)
+            records.append({"name": name, "kind": "enum", "file": rel, "fields": values[:15]})
+
+    print(f"  ✓ Indexed {len(records)} TypeScript types")
+    return records
+
+
 def index_secondary_context(repo: Path) -> tuple[list[dict], list[dict]]:
     """
     Parse a secondary context file (GEMINI.md / ops-agent context) →
@@ -412,7 +462,7 @@ def index_services_and_history(repo: Path) -> tuple[list[dict], list[dict]]:
 
 # ── SurrealDB writer ──────────────────────────────────────────────────────────
 
-async def write_all(specs, endpoints, components, hooks, context,
+async def write_all(specs, endpoints, components, hooks, tstypes, context,
                     services, history, secondary_decisions, secondary_context):
     from surrealdb import AsyncSurreal
 
@@ -453,6 +503,13 @@ async def write_all(specs, endpoints, components, hooks, context,
             await db.query(
                 "DELETE hook WHERE name = $n; CREATE hook CONTENT $data",
                 {"n": h["name"], "data": h}
+            )
+
+        print(f"📦 Writing {len(tstypes)} TypeScript types...")
+        for t in tstypes:
+            await db.query(
+                "DELETE tstype WHERE name = $n AND file = $f; CREATE tstype CONTENT $data",
+                {"n": t["name"], "f": t["file"], "data": t}
             )
 
         # --- CUSTOMIZE: seed project-specific facts into memory ---
@@ -504,10 +561,11 @@ async def main():
     endpoints                          = index_go_routes(REPO)
     components                         = index_react_components(REPO)
     hooks                              = index_hooks(REPO)
+    tstypes                            = index_ts_types(REPO)
     services, history                  = index_services_and_history(REPO)
     secondary_decisions, secondary_ctx = index_secondary_context(REPO)
 
-    await write_all(specs, endpoints, components, hooks, context,
+    await write_all(specs, endpoints, components, hooks, tstypes, context,
                     services, history, secondary_decisions, secondary_ctx)
 
 

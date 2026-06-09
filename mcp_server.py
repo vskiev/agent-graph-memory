@@ -120,14 +120,31 @@ async def find_component(name: str) -> str:
         {"name": name}
     )
     if not rows:
-        rows = await q(
+        # Fallback: search TypeScript types (interface/type/enum)
+        ts_rows = await q(
+            "SELECT name, kind, file, fields FROM tstype WHERE name = $name",
+            {"name": name}
+        )
+        if ts_rows:
+            r = ts_rows[0]
+            return (
+                f"TypeScript {r['kind']}: {r['name']}\n"
+                f"File:   {r['file']}\n"
+                f"Fields: {', '.join(r.get('fields') or []) or 'none'}"
+            )
+        # Partial match across components and types
+        similar = await q(
             "SELECT name, file FROM component WHERE name CONTAINS $part",
             {"part": name}
         )
-        if rows:
-            found = ", ".join(r["name"] for r in rows)
-            return f"Exact match not found. Similar: {found}"
-        return f"Component '{name}' not indexed."
+        ts_similar = await q(
+            "SELECT name, kind, file FROM tstype WHERE name CONTAINS $part",
+            {"part": name}
+        )
+        found = [r["name"] for r in similar] + [f"{r['name']} ({r['kind']})" for r in ts_similar]
+        if found:
+            return f"Exact match not found. Similar: {', '.join(found)}"
+        return f"Component or type '{name}' not indexed."
 
     r = rows[0]
     hooks = r.get("hooks") or []
