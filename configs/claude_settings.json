@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-graph": {
+      "type": "sse",
+      "url": "http://localhost:3333/sse",
+      "description": "Shared knowledge graph — code navigation, specs, multi-agent memory"
+    }
+  }
+}

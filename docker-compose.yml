@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v2
+    container_name: agent-graph-db
+    user: root
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - SRDB_CAPS_ALLOW_ALL=true
+    command: start --user root --pass root_password --bind 0.0.0.0:8000 rocksdb:/data/project.db
+    restart: always
+    healthcheck:
+      test: ["CMD", "/surreal", "isready", "--conn", "http://localhost:8000"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mcp_server:
+    build: .
+    container_name: agent-graph-mcp
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    ports:
+      - "3333:3333"    # SSE endpoint: http://localhost:3333/sse
+    volumes:
+      - ./:/app
+      - ..:/repo:ro    # Your project repo (read-only for indexer)
+    environment:
+      - MCP_TRANSPORT=sse
+      - MCP_PORT=3333
+      - SURREALDB_URL=ws://surrealdb:8000/rpc
+      - SURREALDB_USER=root
+      - SURREALDB_PASS=root_password
+      - SURREALDB_NS=project
+      - SURREALDB_DB=main
+    restart: always
+
+  watcher:
+    build: .
+    container_name: agent-graph-watcher
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+      - ..:/repo:ro
+    environment:
+      - SURREALDB_URL=ws://surrealdb:8000/rpc
+      - SURREALDB_USER=root
+      - SURREALDB_PASS=root_password
+      - SURREALDB_NS=project
+      - SURREALDB_DB=main
+      - REPO_PATH=/repo
+      - WATCHER_DEBOUNCE=10
+    command: python3 /app/watcher.py
+    restart: always
