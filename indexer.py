@@ -1,38 +1,26 @@
 #!/usr/bin/env python3
 """
-Agent Graph Indexer
+CivicChain Graph Indexer
 Parses the repo and populates SurrealDB with the knowledge graph.
 
 Run after merges:
-  docker exec agent-graph-mcp python3 /app/indexer.py
+  docker exec civicchain_mcp python3 /app/indexer.py
 
 Or locally (needs surrealdb pip package):
   SURREALDB_URL=ws://localhost:8000/rpc python3 indexer.py
-
---- CUSTOMIZE ---
-This indexer is a template. Edit the parsers below to match your project structure.
-Each function is independent — enable only what you need.
 """
 import asyncio
 import os
 import re
+import json
 from pathlib import Path
 
 REPO        = Path(os.getenv("REPO_PATH", "/repo"))
 DB_URL      = os.getenv("SURREALDB_URL",  "ws://surrealdb:8000/rpc")
 DB_USER     = os.getenv("SURREALDB_USER", "root")
 DB_PASS     = os.getenv("SURREALDB_PASS", "root_password")
-DB_NS       = os.getenv("SURREALDB_NS",   "project")
+DB_NS       = os.getenv("SURREALDB_NS",   "civicchain")
 DB_DB       = os.getenv("SURREALDB_DB",   "main")
-
-# --- CUSTOMIZE: path to your Go API router file (relative to REPO root) ---
-GO_MAIN_PATH = os.getenv("GO_MAIN_PATH", "api/cmd/server/main.go")
-
-# --- CUSTOMIZE: path to your main context file ---
-CONTEXT_FILE = os.getenv("CONTEXT_FILE", "CLAUDE.md")  # or AGENTS.md, README.md, etc.
-
-# --- CUSTOMIZE: path to your secondary context file (infra/ops agent) ---
-SECONDARY_CONTEXT_FILE = os.getenv("SECONDARY_CONTEXT_FILE", "GEMINI.md")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -49,24 +37,38 @@ def parse_frontmatter(text: str) -> dict:
 
 
 def parse_ac(text: str) -> list[dict]:
-    """Extract acceptance criteria from spec markdown."""
+    """Extract acceptance criteria from spec markdown.
+    Supports both '- [ ] **AC-1**: text' and plain '- [ ] text' formats.
+    Only parses lines within the Acceptance Criteria section.
+    """
     items = []
-    for m in re.finditer(r'- \[([ xX])\] \*\*?(AC-\d+)\*\*?:?\s*(.+)', text):
-        items.append({
-            "id":   m.group(2),
-            "done": m.group(1).lower() == "x",
-            "text": m.group(3).strip()
-        })
+    in_section = False
+    idx = 1
+    for line in text.splitlines():
+        if re.search(r'acceptance criteria|## AC', line, re.IGNORECASE):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith('#'):
+                break
+            m = re.match(r'\s*- \[([ xX])\] \*\*?(AC-\d+)\*\*?:?\s*(.+)', line)
+            if m:
+                items.append({"id": m.group(2), "done": m.group(1).lower() == "x", "text": m.group(3).strip()})
+                idx += 1
+            else:
+                m2 = re.match(r'\s*- \[([ xX])\] (.+)', line)
+                if m2:
+                    items.append({"id": f"AC-{idx}", "done": m2.group(1).lower() == "x", "text": m2.group(2).strip()})
+                    idx += 1
     return items
 
 
 def parse_key_files(text: str) -> list[str]:
-    """Extract backtick-quoted file paths from a 'Key files' section."""
+    """Extract key files list from spec markdown."""
     files = []
     in_section = False
     for line in text.splitlines():
-        # Matches common section headings in English or other languages
-        if re.search(r'key files|ключові файли|ключевые файлы', line, re.I):
+        if "ключові файли" in line.lower() or "ключевые файлы" in line.lower():
             in_section = True
             continue
         if in_section:
@@ -80,20 +82,14 @@ def parse_key_files(text: str) -> list[str]:
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
-def index_context_file(repo: Path) -> list[dict]:
-    """
-    Parse your main context file (CLAUDE.md / AGENTS.md) → context records.
-
-    --- CUSTOMIZE ---
-    Edit the section headings below to match your context file structure.
-    Each section becomes a queryable entry in the `context` table.
-    """
-    context_path = repo / CONTEXT_FILE
-    if not context_path.exists():
-        print(f"  ⚠ {CONTEXT_FILE} not found at {context_path}")
+def index_claude_md(repo: Path) -> list[dict]:
+    """Parse CLAUDE.md → context records by section."""
+    claude_md = repo / "CLAUDE.md"
+    if not claude_md.exists():
+        print(f"  ⚠ CLAUDE.md not found")
         return []
 
-    text = context_path.read_text(encoding="utf-8")
+    text = claude_md.read_text(encoding="utf-8")
     records = []
 
     def extract_section(heading: str) -> str:
@@ -101,46 +97,54 @@ def index_context_file(repo: Path) -> list[dict]:
         m = re.search(rf'^## {re.escape(heading)}(.+?)(?=^## |\Z)', text, re.MULTILINE | re.DOTALL)
         return m.group(1).strip() if m else ""
 
-    # --- CUSTOMIZE: map your section headings to canonical section names ---
-    # Format: ("Your ## heading text", "canonical_section_name", "key")
-    TEXT_SECTIONS = [
-        # ("Mission",        "mission",      "mission"),
-        # ("Architecture",   "architecture", "overview"),
-        # ("Quick Start",    "commands",     "quickstart"),
-    ]
+    # Mission
+    mission = extract_section("Миссия проекта")
+    if mission:
+        records.append({"section": "mission", "key": "mission", "content": mission})
 
-    for heading, section, key in TEXT_SECTIONS:
-        content = extract_section(heading)
-        if content:
-            records.append({"section": section, "key": key, "content": content})
+    # Architecture (summary without code blocks)
+    arch = extract_section("Архитектура")
+    if arch:
+        records.append({"section": "architecture", "key": "overview", "content": arch})
 
-    # --- CUSTOMIZE: parse module/feature table ---
-    # Uncomment and adapt if your context file has a module status table like:
-    # **ModuleName** ✅ — description
-    #
-    # modules_text = extract_section("Modules")
-    # for m in re.finditer(r'\*\*(\w+)\*\*\s*([✅]?)\s*[—-]\s*([^\n;]+)', modules_text):
-    #     name, status_icon, desc = m.groups()
-    #     records.append({
-    #         "section": "module",
-    #         "key":     name,
-    #         "content": desc.strip(),
-    #         "status":  "active" if "✅" in status_icon else "planned",
-    #     })
+    # Modules — parse table rows with status ✅/post-MVP/draft
+    modules_text = extract_section("Модули платформы")
+    for m in re.finditer(r'\*\*(\w+)\*\*\s*([✅🔲]?)\s*—\s*([^\n;]+)', modules_text):
+        name, status_icon, desc = m.groups()
+        status = "mvp" if "✅" in status_icon else "post-mvp"
+        records.append({
+            "section": "module",
+            "key":     name,
+            "content": desc.strip(),
+            "status":  status,
+        })
 
-    # --- CUSTOMIZE: parse constants table ---
-    # Uncomment if you have a constants section like: CONST_NAME = 42  // description
-    #
-    # constants_text = extract_section("Constants")
-    # for m in re.finditer(r'(\w+)\s*=\s*(\S+)\s*//\s*(.+)', constants_text):
-    #     records.append({
-    #         "section": "constant",
-    #         "key":     m.group(1),
-    #         "content": m.group(2),
-    #         "comment": m.group(3).strip(),
-    #     })
+    # Contracts — parse from смарт-контракты section
+    contracts_text = extract_section("Смарт-контракты")
+    for m in re.finditer(r'Адрес[^`]*`(0x[0-9a-fA-F]+)`', contracts_text):
+        addr = m.group(1)
+        # find contract name above this address line
+        before = contracts_text[:m.start()]
+        name_m = re.findall(r'### (\w+\.sol)', before)
+        name = name_m[-1] if name_m else "unknown"
+        records.append({"section": "contract", "key": name, "content": addr})
 
-    print(f"  ✓ Indexed {len(records)} context records from {CONTEXT_FILE}")
+    # Constants
+    constants_text = extract_section("Важные константы")
+    for m in re.finditer(r'(\w+)\s*=\s*(\d+)\s*//\s*(.+)', constants_text):
+        records.append({
+            "section": "constant",
+            "key":     m.group(1),
+            "content": m.group(2),
+            "comment": m.group(3).strip(),
+        })
+
+    # Dev commands (quick start)
+    commands_text = extract_section("Команды для быстрого старта")
+    if commands_text:
+        records.append({"section": "commands", "key": "quickstart", "content": commands_text})
+
+    print(f"  ✓ Indexed {len(records)} context records from CLAUDE.md")
     return records
 
 
@@ -171,33 +175,35 @@ def index_specs(repo: Path) -> list[dict]:
 
 
 def index_go_routes(repo: Path) -> list[dict]:
-    """
-    Parse a Go (Gin) main.go router → endpoint records.
-
-    --- CUSTOMIZE ---
-    Set GO_MAIN_PATH env var or edit the default above to point to your router file.
-    This parser handles standard Gin group/route patterns.
-    """
-    main_go = repo / GO_MAIN_PATH
+    """Parse main.go router setup → endpoint records with full paths."""
+    main_go = repo / "civicchain" / "api" / "cmd" / "server" / "main.go"
     if not main_go.exists():
-        print(f"  ⚠ main.go not found at {main_go} — skipping endpoint indexing")
+        print(f"  ⚠ main.go not found at {main_go}")
         return []
 
     text = main_go.read_text(encoding="utf-8")
     records = []
 
-    group_pattern = re.compile(r'\b(\w+)\s*:?=\s*(\w+)\.Group\("([^"]+)"\)')
+    # Step 1: build group prefix map from Group() declarations.
+    # Matches: varname := parent.Group("/prefix") or varname = parent.Group("/prefix")
+    group_pattern = re.compile(
+        r'\b(\w+)\s*:?=\s*(\w+)\.Group\("([^"]+)"\)'
+    )
+    # Seed with the root router (r has no prefix)
     group_prefix: dict[str, str] = {"r": ""}
 
+    # Iterate until no more resolutions (handles chains like ap = cp.Group(...))
     for _ in range(5):
         for gm in group_pattern.finditer(text):
             var, parent, seg = gm.groups()
             if parent in group_prefix and var not in group_prefix:
                 group_prefix[var] = group_prefix[parent] + seg
 
+    # Step 2: extract route declarations, handling nested parens for middleware args
     route_start = re.compile(
         r'\b(\w+)\s*\.\s*(GET|POST|PUT|PATCH|DELETE)\s*\(\s*"([^"]*)"'
     )
+    # Last word.word before closing paren — the actual handler
     handler_re = re.compile(r'(\w+)\.(\w+)\s*$')
 
     for sm in route_start.finditer(text):
@@ -205,6 +211,7 @@ def index_go_routes(repo: Path) -> list[dict]:
         if grp not in group_prefix:
             continue
 
+        # Walk forward from match end to find the matching closing paren
         depth, i = 1, sm.end()
         while i < len(text) and depth > 0:
             if text[i] == '(':
@@ -212,8 +219,9 @@ def index_go_routes(repo: Path) -> list[dict]:
             elif text[i] == ')':
                 depth -= 1
             i += 1
-        args = text[sm.end():i - 1]
+        args = text[sm.end():i - 1]  # everything inside the route call
 
+        # Handler is the last word.word token
         hm = handler_re.search(args.strip())
         handler_fn = f"{hm.group(1)}.{hm.group(2)}" if hm else ""
 
@@ -221,7 +229,7 @@ def index_go_routes(repo: Path) -> list[dict]:
         records.append({
             "method":     method,
             "path":       group_prefix[grp] + path,
-            "file":       GO_MAIN_PATH,
+            "file":       "civicchain/api/cmd/server/main.go",
             "line":       line_no,
             "handler_fn": handler_fn,
             "spec":       "",
@@ -232,32 +240,30 @@ def index_go_routes(repo: Path) -> list[dict]:
 
 
 def index_react_components(repo: Path) -> list[dict]:
-    """
-    Parse frontend/src/**/*.tsx → component records.
-
-    --- CUSTOMIZE ---
-    Change the `src` path if your frontend lives elsewhere.
-    """
+    """Parse frontend/src/pages + components/*.tsx → component records."""
     records = []
     src = repo / "frontend" / "src"
     if not src.exists():
-        print(f"  ⚠ frontend/src not found — skipping component indexing")
+        print(f"  ⚠ frontend/src not found")
         return records
 
     for tsx in sorted(src.glob("**/*.tsx")):
         rel = str(tsx.relative_to(repo / "frontend"))
         text = tsx.read_text(encoding="utf-8")
 
+        # Component name from export default function X
         name_m = re.search(r'export default function (\w+)', text)
         if not name_m:
             continue
         name = name_m.group(1)
 
+        # Hooks used (from hooks/ directory)
         hooks = re.findall(r'import\s+{([^}]+)}\s+from\s+[\'"]\.\.?\/hooks\/(\w+)', text)
         hook_names = []
         for names, _ in hooks:
             hook_names.extend(n.strip() for n in names.split(",") if n.strip())
 
+        # API functions used
         api_fns = re.findall(r'import\s+{([^}]+)}\s+from\s+[\'"]\.\.?\/api\/(\w+)', text)
         api_names = []
         for names, _ in api_fns:
@@ -294,13 +300,7 @@ def index_hooks(repo: Path) -> list[dict]:
 
 
 def index_ts_types(repo: Path) -> list[dict]:
-    """
-    Parse frontend/src/**/*.ts → TypeScript interface/type/enum records.
-    Enables find_component() to also find TS types by name.
-
-    --- CUSTOMIZE ---
-    Change the `src` path if your frontend lives elsewhere.
-    """
+    """Parse frontend/src/**/*.ts → TypeScript interface/type/enum records."""
     records = []
     src = repo / "frontend" / "src"
     if not src.exists():
@@ -343,21 +343,14 @@ def index_ts_types(repo: Path) -> list[dict]:
     return records
 
 
-def index_secondary_context(repo: Path) -> tuple[list[dict], list[dict]]:
-    """
-    Parse a secondary context file (GEMINI.md / ops-agent context) →
-    architectural decisions + additional context records.
-
-    --- CUSTOMIZE ---
-    Edit section headings to match your file.
-    The "Decisions Already Made" section is parsed generically.
-    """
-    ctx_path = repo / SECONDARY_CONTEXT_FILE
-    if not ctx_path.exists():
-        print(f"  ⚠ {SECONDARY_CONTEXT_FILE} not found — skipping")
+def index_gemini_md(repo: Path) -> tuple[list[dict], list[dict]]:
+    """Parse GEMINI.md → architectural decisions + GCP context records."""
+    gemini_md = repo / "GEMINI.md"
+    if not gemini_md.exists():
+        print(f"  ⚠ GEMINI.md not found")
         return [], []
 
-    text = ctx_path.read_text(encoding="utf-8")
+    text = gemini_md.read_text(encoding="utf-8")
     decisions = []
     context   = []
 
@@ -365,8 +358,7 @@ def index_secondary_context(repo: Path) -> tuple[list[dict], list[dict]]:
         m = re.search(rf'^## {re.escape(heading)}(.+?)(?=^## |\Z)', text, re.MULTILINE | re.DOTALL)
         return m.group(1).strip() if m else ""
 
-    # Generic: parse "## Decisions Already Made" section
-    # Format: - **Topic**: Decision text — Rationale
+    # ── Decisions Already Made ────────────────────────────────────────
     decisions_text = extract_section("Decisions Already Made")
     for m in re.finditer(r'^- \*\*([^*]+)\*\*:\s*(.+)', decisions_text, re.MULTILINE):
         topic, rest = m.group(1).strip(), m.group(2).strip()
@@ -374,62 +366,70 @@ def index_secondary_context(repo: Path) -> tuple[list[dict], list[dict]]:
             decision, rationale = rest.split(" — ", 1)
         else:
             decision, rationale = rest, ""
+        # strip trailing [TICKET-REF]
         rationale = re.sub(r'\s*\[[A-Z0-9,\.\- ]+\]\s*$', '', rationale).strip()
         decisions.append({
             "topic":     topic,
             "decision":  decision.strip(),
             "rationale": rationale,
-            "agent":     "secondary_context",
+            "agent":     "gemini_md",
         })
 
-    # --- CUSTOMIZE: add more section parsers here ---
-    # Example: parse an "Infrastructure Stack" section
-    #
-    # infra_text = extract_section("Infrastructure Stack")
-    # if infra_text:
-    #     context.append({
-    #         "section": "infra",
-    #         "key":     "stack",
-    #         "content": infra_text.strip(),
-    #     })
+    # ── CivicPoll V1→V3 Roadmap table ────────────────────────────────
+    roadmap_text = extract_section("CivicPoll Architecture Roadmap")
+    if roadmap_text:
+        context.append({
+            "section": "civicpoll_roadmap",
+            "key":     "v1_v3",
+            "content": roadmap_text.strip(),
+        })
 
-    print(f"  ✓ Indexed {len(decisions)} decisions + {len(context)} context records from {SECONDARY_CONTEXT_FILE}")
+    # ── GCP Production stack ──────────────────────────────────────────
+    infra_text = extract_section("Infrastructure Stack")
+    gcp_m = re.search(r'### Production: GCP(.+?)###', infra_text, re.DOTALL)
+    if gcp_m:
+        context.append({
+            "section": "gcp_stack",
+            "key":     "production",
+            "content": gcp_m.group(1).strip(),
+        })
+
+    # ── Secret Manager names ──────────────────────────────────────────
+    secrets_text = extract_section("Secret Manager Structure")
+    if secrets_text:
+        context.append({
+            "section": "secrets",
+            "key":     "gcp_secret_manager",
+            "content": secrets_text.strip(),
+        })
+
+    print(f"  ✓ Indexed {len(decisions)} decisions + {len(context)} GCP context records from GEMINI.md")
     return decisions, context
 
 
-def index_services_and_history(repo: Path) -> tuple[list[dict], list[dict]]:
-    """
-    Parse specs/INDEX.md → service records + history records.
-
-    --- CUSTOMIZE ---
-    Edit the section heading strings to match your INDEX.md headings.
-    """
+def index_index_md(repo: Path) -> tuple[list[dict], list[dict]]:
+    """Parse specs/INDEX.md → service records + history records."""
     index_md = repo / "specs" / "INDEX.md"
     if not index_md.exists():
-        print(f"  ⚠ specs/INDEX.md not found — skipping services/history")
+        print(f"  ⚠ specs/INDEX.md not found")
         return [], []
 
     text = index_md.read_text(encoding="utf-8")
     services = []
     history  = []
 
-    # --- CUSTOMIZE: heading for the services table ---
-    SERVICES_HEADING = "## Services"   # change to match your INDEX.md
-
-    # --- CUSTOMIZE: heading for the history table ---
-    HISTORY_HEADING = "## Implementation History"  # change to match your INDEX.md
-
-    # Parse services table: | name | `directory/` | ... | status |
+    # ── Services table ────────────────────────────────────────────────
+    # | blockchain | `civicchain/` | [OVERVIEW.md](...) | ✅ works... |
     in_services = False
     for line in text.splitlines():
-        if SERVICES_HEADING in line:
+        if "## Сервисы" in line:
             in_services = True
             continue
         if in_services:
             if line.startswith("## "):
                 break
             m = re.match(r'\|\s*([\w-]+)\s*\|\s*`([^`]+)`\s*\|[^|]+\|\s*(.+?)\s*\|', line)
-            if m and m.group(1) not in ("Service", "---", ""):
+            if m and m.group(1) not in ("Сервис", "---", ""):
                 name, directory, status = m.group(1), m.group(2), m.group(3)
                 services.append({
                     "name":      name.strip(),
@@ -437,10 +437,11 @@ def index_services_and_history(repo: Path) -> tuple[list[dict], list[dict]]:
                     "status":    re.sub(r'[✅🔲]', '', status).strip(),
                 })
 
-    # Parse history table: | N | [TICKET-01](...) ✅ | Description |
+    # ── History table ─────────────────────────────────────────────────
+    # | 42 | [CIVICLIVE-01](...) ✅ | CivicLive: /ask /answer... |
     in_history = False
     for line in text.splitlines():
-        if HISTORY_HEADING in line:
+        if "## История реализации" in line:
             in_history = True
             continue
         if in_history:
@@ -449,6 +450,7 @@ def index_services_and_history(repo: Path) -> tuple[list[dict], list[dict]]:
             m = re.match(r'\|\s*(\d+)\s*\|\s*\[([^\]]+)\]\([^)]+\)\s*[✅🔲]?\s*\|\s*(.+?)\s*\|', line)
             if m:
                 order, ticket, description = int(m.group(1)), m.group(2).strip(), m.group(3).strip()
+                # skip duplicate rows (same order number)
                 if not history or history[-1]["order"] != order:
                     history.append({
                         "order":       order,
@@ -462,8 +464,7 @@ def index_services_and_history(repo: Path) -> tuple[list[dict], list[dict]]:
 
 # ── SurrealDB writer ──────────────────────────────────────────────────────────
 
-async def write_all(specs, endpoints, components, hooks, tstypes, context,
-                    services, history, secondary_decisions, secondary_context):
+async def write_all(specs, endpoints, components, hooks, tstypes, context, services, history, gemini_decisions, gemini_context):
     from surrealdb import AsyncSurreal
 
     async with AsyncSurreal(DB_URL) as db:
@@ -512,16 +513,21 @@ async def write_all(specs, endpoints, components, hooks, tstypes, context,
                 {"n": t["name"], "f": t["file"], "data": t}
             )
 
-        # --- CUSTOMIZE: seed project-specific facts into memory ---
-        # known_facts = {
-        #     "db_host":  "postgres:5432",
-        #     "api_port": "3000",
-        # }
-        # for k, v in known_facts.items():
-        #     await db.query(
-        #         "DELETE memory WHERE key = $k; CREATE memory SET key=$k, value=$v, agent='indexer'",
-        #         {"k": k, "v": v}
-        #     )
+        known_facts = {
+            "mandate_contract":   "0x42699A7612A82f1d9C36148af9C77354759b210b",
+            "civicvote_contract": "0x4245CF4518CB2C280f5e9c6a03c90C147F80B4d9",
+            "chain_id":           "1337",
+            "besu_rpc":           "http://localhost:8545",
+            "api_port":           "3000",
+            "tender_port":        "3001",
+            "ch_port":            "8123",
+            "gateway":            "http://localhost (APISIX port 80)",
+        }
+        for k, v in known_facts.items():
+            await db.query(
+                "DELETE kv_store WHERE key = $k; CREATE kv_store SET key=$k, val=$v, agent='indexer'",
+                {"k": k, "v": v}
+            )
 
         print(f"📦 Writing {len(services)} services...")
         for s in services:
@@ -537,13 +543,17 @@ async def write_all(specs, endpoints, components, hooks, tstypes, context,
                 {"t": h["ticket"], "data": h}
             )
 
-        print(f"📦 Writing {len(secondary_decisions)} decisions from {SECONDARY_CONTEXT_FILE}...")
-        await db.query("DELETE decision WHERE agent = 'secondary_context'")
-        for d in secondary_decisions:
-            await db.query("CREATE decision CONTENT $data", {"data": d})
+        # Gemini decisions — delete previous indexer batch, preserve runtime decisions
+        print(f"📦 Writing {len(gemini_decisions)} decisions from GEMINI.md...")
+        await db.query("DELETE decision WHERE agent = 'gemini_md'")
+        for d in gemini_decisions:
+            await db.query(
+                "CREATE decision CONTENT $data",
+                {"data": {**d, "created_at": "2026-06-08T00:00:00Z"}}
+            )
 
-        print(f"📦 Writing {len(secondary_context)} context records from {SECONDARY_CONTEXT_FILE}...")
-        for c in secondary_context:
+        print(f"📦 Writing {len(gemini_context)} GCP context records from GEMINI.md...")
+        for c in gemini_context:
             await db.query(
                 "DELETE context WHERE section = $s AND key = $k; CREATE context CONTENT $data",
                 {"s": c["section"], "k": c["key"], "data": c}
@@ -553,20 +563,19 @@ async def write_all(specs, endpoints, components, hooks, tstypes, context,
 
 
 async def main():
-    print(f"🔍 Indexing repo at: {REPO}")
+    print(f"🔍 Indexing CivicChain repo at: {REPO}")
     print(f"🗄️  Target: {DB_URL} / {DB_NS}.{DB_DB}\n")
 
-    context                            = index_context_file(REPO)
-    specs                              = index_specs(REPO)
-    endpoints                          = index_go_routes(REPO)
-    components                         = index_react_components(REPO)
-    hooks                              = index_hooks(REPO)
-    tstypes                            = index_ts_types(REPO)
-    services, history                  = index_services_and_history(REPO)
-    secondary_decisions, secondary_ctx = index_secondary_context(REPO)
+    context                        = index_claude_md(REPO)
+    specs                          = index_specs(REPO)
+    endpoints                      = index_go_routes(REPO)
+    components                     = index_react_components(REPO)
+    hooks                          = index_hooks(REPO)
+    tstypes                        = index_ts_types(REPO)
+    services, history              = index_index_md(REPO)
+    gemini_decisions, gemini_ctx   = index_gemini_md(REPO)
 
-    await write_all(specs, endpoints, components, hooks, tstypes, context,
-                    services, history, secondary_decisions, secondary_ctx)
+    await write_all(specs, endpoints, components, hooks, tstypes, context, services, history, gemini_decisions, gemini_ctx)
 
 
 if __name__ == "__main__":
